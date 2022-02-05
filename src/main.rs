@@ -9,7 +9,7 @@ use std::{
 };
 
 use clap::Parser;
-use futures::{ready, FutureExt};
+use futures_util::{ready, FutureExt};
 use hyper::{
     server::accept::Accept,
     service::{make_service_fn, service_fn},
