@@ -1,20 +1,24 @@
-use std::convert::Infallible;
-use std::io::{Error as IoError, ErrorKind};
-use std::pin::Pin;
-use std::sync::Arc;
-use std::task::{self, Poll};
-use std::{net::SocketAddr, str::FromStr};
+use std::{
+    convert::Infallible,
+    io::{Error as IoError, ErrorKind},
+    net::SocketAddr,
+    pin::Pin,
+    str::FromStr,
+    sync::Arc,
+    task::{self, Poll},
+};
 
 use clap::Parser;
 use futures::{ready, FutureExt};
-use hyper::server::accept::Accept;
-use hyper::service::{make_service_fn, service_fn};
-use hyper::upgrade::Upgraded;
-use hyper::{Body, Method, Request, Response, Server, StatusCode};
+use hyper::{
+    server::accept::Accept,
+    service::{make_service_fn, service_fn},
+    upgrade::Upgraded,
+    Body, Method, Request, Response, Server, StatusCode,
+};
 use rustls::{Certificate, PrivateKey, ServerConfig};
 use tokio::net::{TcpListener, TcpStream};
-use tokio_rustls::server::TlsStream;
-use tokio_rustls::TlsAcceptor;
+use tokio_rustls::{server::TlsStream, TlsAcceptor};
 
 #[derive(Parser)]
 struct Opts {
@@ -140,9 +144,7 @@ async fn tunnel(req: Request<Body>) -> Result<Response<Body>, Infallible> {
                             log::error!("Error in tunnel_proxy: {err:?}");
                         }
                     }
-                    Err(err) => {
-                        log::error!("Error: {err:?}");
-                    }
+                    Err(err) => log::error!("Error: {err:?}"),
                 }
             });
             Ok(Response::builder()
