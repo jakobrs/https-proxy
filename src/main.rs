@@ -159,7 +159,15 @@ fn read_key(file: &str) -> std::io::Result<PrivateKey> {
 }
 
 async fn tunnel(req: Request<Body>) -> Result<Response<Body>, Infallible> {
-    if let Some(authority) = req.uri().authority().map(std::string::ToString::to_string) {
+    if let Some(authority) = req.uri().authority() {
+        if authority.host() != "domain-name.xyz" {
+            return Ok(Response::builder()
+                .status(StatusCode::FORBIDDEN)
+                .body("Only connections to domain-name.xyz are allowed".into())
+                .unwrap());
+        }
+        let authority = authority.to_string();
+
         if req.method() == Method::CONNECT {
             tokio::task::spawn(async move {
                 match hyper::upgrade::on(req).await {
