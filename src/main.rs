@@ -130,7 +130,7 @@ fn read_key(file: &str) -> std::io::Result<PrivateKey> {
     let key = keys
         .into_iter()
         .next()
-        .ok_or(IoError::new(ErrorKind::Other, "no keys"))?;
+        .ok_or_else(|| IoError::new(ErrorKind::Other, "no keys"))?;
     Ok(PrivateKey(key))
 }
 
