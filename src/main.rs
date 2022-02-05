@@ -21,6 +21,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio_rustls::{server::TlsStream, TlsAcceptor};
 
 #[derive(Parser)]
+/// Runs an HTTP(S) proxy
 struct Opts {
     #[clap(short, long, default_value = "127.0.0.1:8100")]
     /// Listen address
