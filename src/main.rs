@@ -26,12 +26,16 @@ struct Opts {
     /// Listen address
     listen: String,
 
+    #[clap(long, requires = "key-file", requires = "cert-file")]
+    /// Use TLS
+    tls: bool,
+
     #[clap(long)]
     /// Key file
-    key_file: String,
+    key_file: Option<String>,
     #[clap(long)]
     /// Certificate file
-    cert_file: String,
+    cert_file: Option<String>,
 }
 
 #[tokio::main]
@@ -39,11 +43,22 @@ async fn main() -> anyhow::Result<()> {
     env_logger::init();
 
     let opts = Opts::parse();
+
+    if opts.tls {
+        serve_tls(&opts).await?;
+    } else {
+        serve_plain(&opts).await?;
+    }
+
+    Ok(())
+}
+
+async fn serve_tls(opts: &Opts) -> anyhow::Result<()> {
     let addr = SocketAddr::from_str(&opts.listen)?;
 
     let server_config = {
-        let certs = read_certs(&opts.cert_file)?;
-        let key = read_key(&opts.key_file)?;
+        let certs = read_certs(opts.cert_file.as_ref().unwrap())?;
+        let key = read_key(opts.key_file.as_ref().unwrap())?;
 
         let mut cfg = ServerConfig::builder()
             .with_safe_defaults()
@@ -69,11 +84,20 @@ async fn main() -> anyhow::Result<()> {
         .http1_title_case_headers(true)
         .serve(make_service);
 
-    if let Err(err) = server.await {
-        log::error!("{err:?}");
-    }
+    Ok(server.await?)
+}
 
-    Ok(())
+async fn serve_plain(opts: &Opts) -> anyhow::Result<()> {
+    let addr = SocketAddr::from_str(&opts.listen)?;
+
+    let make_service = make_service_fn(|_| async { Ok::<_, Infallible>(service_fn(tunnel)) });
+
+    let server = Server::bind(&addr)
+        .http1_preserve_header_case(true)
+        .http1_title_case_headers(true)
+        .serve(make_service);
+
+    Ok(server.await?)
 }
 
 struct Acceptor {
