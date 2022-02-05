@@ -1,15 +1,16 @@
 use std::convert::Infallible;
-use std::io::{Cursor, Error as IoError, ErrorKind};
+use std::io::{Error as IoError, ErrorKind};
 use std::pin::Pin;
+use std::sync::Arc;
 use std::task::{self, Poll};
-use std::{net::SocketAddr, str::FromStr, sync::Arc};
+use std::{net::SocketAddr, str::FromStr};
 
 use clap::Parser;
 use futures::{ready, FutureExt};
-use hyper::server::accept::{self, Accept};
-use hyper::server::conn::AddrStream;
+use hyper::server::accept::Accept;
 use hyper::service::{make_service_fn, service_fn};
-use hyper::{Body, Response, Server};
+use hyper::upgrade::Upgraded;
+use hyper::{Body, Method, Request, Response, Server, StatusCode};
 use rustls::{Certificate, PrivateKey, ServerConfig};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_rustls::server::TlsStream;
@@ -57,15 +58,7 @@ async fn main() -> anyhow::Result<()> {
         currently_accepting: None,
     };
 
-    let make_service = make_service_fn(|socket: &_| {
-        eprintln!("{socket:?}");
-
-        async {
-            Ok::<_, Infallible>(service_fn(|req| async {
-                Ok::<_, Infallible>(Response::new(Body::empty()))
-            }))
-        }
-    });
+    let make_service = make_service_fn(|_| async { Ok::<_, Infallible>(service_fn(tunnel)) });
 
     let server = Server::builder(incoming)
         .http1_preserve_header_case(true)
@@ -73,7 +66,7 @@ async fn main() -> anyhow::Result<()> {
         .serve(make_service);
 
     if let Err(err) = server.await {
-        eprintln!("{err:?}");
+        log::error!("{err:?}");
     }
 
     Ok(())
@@ -135,4 +128,46 @@ fn read_key(file: &str) -> std::io::Result<PrivateKey> {
         .next()
         .ok_or(IoError::new(ErrorKind::Other, "no keys"))?;
     Ok(PrivateKey(key))
+}
+
+async fn tunnel(req: Request<Body>) -> Result<Response<Body>, Infallible> {
+    if let Some(authority) = req.uri().authority().map(std::string::ToString::to_string) {
+        if req.method() == Method::CONNECT {
+            tokio::task::spawn(async move {
+                match hyper::upgrade::on(req).await {
+                    Ok(upgraded) => {
+                        if let Err(err) = tunnel_proxy(upgraded, authority).await {
+                            log::error!("Error in tunnel_proxy: {err:?}");
+                        }
+                    }
+                    Err(err) => {
+                        log::error!("Error: {err:?}");
+                    }
+                }
+            });
+            Ok(Response::builder()
+                .status(StatusCode::OK)
+                .body(Body::empty())
+                .unwrap())
+        } else {
+            Ok(Response::builder()
+                .status(StatusCode::NOT_IMPLEMENTED)
+                .body(Body::empty())
+                .unwrap())
+        }
+    } else {
+        Ok(Response::builder()
+            .status(StatusCode::BAD_REQUEST)
+            .body(Body::empty())
+            .unwrap())
+    }
+}
+
+async fn tunnel_proxy(mut upgraded: Upgraded, remote: String) -> Result<(), IoError> {
+    let mut remote = TcpStream::connect(remote).await?;
+
+    let stats = tokio::io::copy_bidirectional(&mut upgraded, &mut remote).await?;
+    log::info!("Stats: {stats:?}");
+
+    Ok(())
 }
