@@ -11,10 +11,11 @@ use std::{
 use clap::Parser;
 use futures_util::{ready, FutureExt};
 use hyper::{
+    client::HttpConnector,
     server::accept::Accept,
     service::{make_service_fn, service_fn},
     upgrade::Upgraded,
-    Body, Method, Request, Response, Server, StatusCode,
+    Body, Client, Method, Request, Response, Server, StatusCode,
 };
 use rustls::{Certificate, PrivateKey, ServerConfig};
 use tokio::net::{TcpListener, TcpStream};
@@ -78,7 +79,15 @@ async fn serve_tls(opts: &Opts) -> anyhow::Result<()> {
         currently_accepting: None,
     };
 
-    let make_service = make_service_fn(|_| async { Ok::<_, Infallible>(service_fn(tunnel)) });
+    let client = Client::builder()
+        .http1_preserve_header_case(true)
+        .http1_title_case_headers(true)
+        .build_http();
+
+    let make_service = make_service_fn(|_| {
+        let client = client.clone();
+        async move { Ok::<_, Infallible>(service_fn(move |req| tunnel(req, client.clone()))) }
+    });
 
     let server = Server::builder(incoming)
         .http1_preserve_header_case(true)
@@ -91,7 +100,15 @@ async fn serve_tls(opts: &Opts) -> anyhow::Result<()> {
 async fn serve_plain(opts: &Opts) -> anyhow::Result<()> {
     let addr = SocketAddr::from_str(&opts.listen)?;
 
-    let make_service = make_service_fn(|_| async { Ok::<_, Infallible>(service_fn(tunnel)) });
+    let client = Client::builder()
+        .http1_preserve_header_case(true)
+        .http1_title_case_headers(true)
+        .build_http();
+
+    let make_service = make_service_fn(|_| {
+        let client = client.clone();
+        async move { Ok::<_, Infallible>(service_fn(move |req| tunnel(req, client.clone()))) }
+    });
 
     let server = Server::bind(&addr)
         .http1_preserve_header_case(true)
@@ -159,7 +176,10 @@ fn read_key(file: &str) -> std::io::Result<PrivateKey> {
     Ok(PrivateKey(key))
 }
 
-async fn tunnel(req: Request<Body>) -> Result<Response<Body>, Infallible> {
+async fn tunnel(
+    req: Request<Body>,
+    client: Client<HttpConnector>,
+) -> Result<Response<Body>, hyper::Error> {
     if let Some(authority) = req.uri().authority() {
         if authority.host() != "domain-name.xyz" {
             return Ok(Response::builder()
@@ -185,10 +205,7 @@ async fn tunnel(req: Request<Body>) -> Result<Response<Body>, Infallible> {
                 .body(Body::empty())
                 .unwrap())
         } else {
-            Ok(Response::builder()
-                .status(StatusCode::NOT_IMPLEMENTED)
-                .body(Body::empty())
-                .unwrap())
+            client.request(req).await
         }
     } else {
         Ok(Response::builder()
