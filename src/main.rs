@@ -56,28 +56,7 @@ async fn main() -> anyhow::Result<()> {
 }
 
 async fn serve_tls(opts: &Opts) -> anyhow::Result<()> {
-    let addr = SocketAddr::from_str(&opts.listen)?;
-
-    let server_config = {
-        let certs = read_certs(opts.cert_file.as_ref().unwrap())?;
-        let key = read_key(opts.key_file.as_ref().unwrap())?;
-
-        let mut cfg = ServerConfig::builder()
-            .with_safe_defaults()
-            .with_no_client_auth()
-            .with_single_cert(certs, key)?;
-        cfg.alpn_protocols = vec![b"http/1.1".to_vec()];
-
-        Arc::new(cfg)
-    };
-    let tls_acceptor = TlsAcceptor::from(server_config);
-
-    let tcp_listener = TcpListener::bind(&addr).await?;
-    let incoming = Acceptor {
-        listener: tcp_listener,
-        tls_acceptor,
-        currently_accepting: None,
-    };
+    let incoming = Acceptor::from_opts(opts).await?;
 
     let client = Client::builder()
         .http1_preserve_header_case(true)
@@ -122,6 +101,31 @@ struct Acceptor {
     listener: TcpListener,
     tls_acceptor: TlsAcceptor,
     currently_accepting: Option<tokio_rustls::Accept<TcpStream>>,
+}
+
+impl Acceptor {
+    async fn from_opts(opts: &Opts) -> anyhow::Result<Self> {
+        let addr = SocketAddr::from_str(&opts.listen)?;
+
+        let server_config = {
+            let certs = read_certs(opts.cert_file.as_ref().unwrap())?;
+            let key = read_key(opts.key_file.as_ref().unwrap())?;
+
+            let mut cfg = ServerConfig::builder()
+                .with_safe_defaults()
+                .with_no_client_auth()
+                .with_single_cert(certs, key)?;
+            cfg.alpn_protocols = vec![b"http/1.1".to_vec()];
+
+            Arc::new(cfg)
+        };
+
+        Ok(Self {
+            listener: TcpListener::bind(&addr).await?,
+            tls_acceptor: TlsAcceptor::from(server_config),
+            currently_accepting: None,
+        })
+    }
 }
 
 impl Accept for Acceptor {
