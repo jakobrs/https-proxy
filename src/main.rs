@@ -12,7 +12,7 @@ use clap::Parser;
 use futures_util::{ready, FutureExt};
 use hyper::{
     client::HttpConnector,
-    server::accept::Accept,
+    server::{accept::Accept, conn::AddrStream},
     service::{make_service_fn, service_fn},
     upgrade::Upgraded,
     Body, Client, Method, Request, Response, Server, StatusCode,
@@ -84,7 +84,8 @@ async fn serve_plain(opts: &Opts) -> anyhow::Result<()> {
         .http1_title_case_headers(true)
         .build_http();
 
-    let make_service = make_service_fn(|_| {
+    let make_service = make_service_fn(|socket: &AddrStream| {
+        log::info!("Received connection from {}", socket.remote_addr());
         let client = client.clone();
         async move { Ok::<_, Infallible>(service_fn(move |req| tunnel(req, client.clone()))) }
     });
@@ -152,7 +153,8 @@ impl Accept for Acceptor {
                     }
                 }
                 None => {
-                    let (stream, _peer) = ready!(this.listener.poll_accept(cx))?;
+                    let (stream, peer) = ready!(this.listener.poll_accept(cx))?;
+                    log::info!("Received connection from {peer}");
                     this.currently_accepting = Some(this.tls_acceptor.accept(stream));
                 }
             }
