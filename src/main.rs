@@ -6,6 +6,7 @@ use std::{
     str::FromStr,
     sync::Arc,
     task::{self, Poll},
+    time::Duration,
 };
 
 use clap::Parser;
@@ -101,7 +102,7 @@ async fn serve_plain(opts: &Opts) -> anyhow::Result<()> {
 struct Acceptor {
     listener: TcpListener,
     tls_acceptor: TlsAcceptor,
-    currently_accepting: Option<tokio_rustls::Accept<TcpStream>>,
+    currently_accepting: Option<Pin<Box<tokio::time::Timeout<tokio_rustls::Accept<TcpStream>>>>>,
 }
 
 impl Acceptor {
@@ -146,16 +147,22 @@ impl Accept for Acceptor {
 
                     this.currently_accepting = None;
                     match tls_stream {
-                        Ok(stream) => return Poll::Ready(Some(Ok(stream))),
-                        Err(err) => {
+                        Ok(Ok(stream)) => return Poll::Ready(Some(Ok(stream))),
+                        Ok(Err(err)) => {
                             log::error!("TLS handshake failed: {err:?}");
+                        }
+                        Err(_elapsed) => {
+                            log::error!("TLS handshake timeout");
                         }
                     }
                 }
                 None => {
                     let (stream, peer) = ready!(this.listener.poll_accept(cx))?;
                     log::info!("Received connection from {peer}");
-                    this.currently_accepting = Some(this.tls_acceptor.accept(stream));
+                    this.currently_accepting = Some(Box::pin(tokio::time::timeout(
+                        Duration::from_secs(3),
+                        this.tls_acceptor.accept(stream),
+                    )));
                 }
             }
         }
