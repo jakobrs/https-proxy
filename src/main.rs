@@ -6,6 +6,7 @@ use std::{
     str::FromStr,
     sync::Arc,
     task::{self, Poll},
+    time::Duration,
 };
 
 use clap::Parser;
@@ -17,6 +18,7 @@ use hyper::{
     upgrade::Upgraded,
     Body, Client, Method, Request, Response, Server, StatusCode,
 };
+use pin_project::pin_project;
 use rustls::{Certificate, PrivateKey, ServerConfig};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_rustls::{server::TlsStream, TlsAcceptor};
@@ -98,10 +100,20 @@ async fn serve_plain(opts: &Opts) -> anyhow::Result<()> {
     Ok(server.await?)
 }
 
+#[pin_project(project = StructuralOptionProj)]
+enum StructuralOption<T> {
+    Some(#[pin] T),
+    None,
+}
+
+const TLS_TIMEOUT: Duration = Duration::from_secs(1);
+
+#[pin_project]
 struct Acceptor {
     listener: TcpListener,
     tls_acceptor: TlsAcceptor,
-    currently_accepting: Option<tokio_rustls::Accept<TcpStream>>,
+    #[pin]
+    currently_accepting: StructuralOption<tokio::time::Timeout<tokio_rustls::Accept<TcpStream>>>,
 }
 
 impl Acceptor {
@@ -124,7 +136,7 @@ impl Acceptor {
         Ok(Self {
             listener: TcpListener::bind(&addr).await?,
             tls_acceptor: TlsAcceptor::from(server_config),
-            currently_accepting: None,
+            currently_accepting: StructuralOption::None,
         })
     }
 }
@@ -137,25 +149,30 @@ impl Accept for Acceptor {
         self: Pin<&mut Self>,
         cx: &mut task::Context<'_>,
     ) -> Poll<Option<Result<Self::Conn, Self::Error>>> {
-        let this = self.get_mut();
+        let mut this = self.project();
 
         loop {
-            match this.currently_accepting {
-                Some(ref mut accept) => {
+            match this.currently_accepting.as_mut().project() {
+                StructuralOptionProj::Some(ref mut accept) => {
                     let tls_stream = ready!(accept.poll_unpin(cx));
+                    this.currently_accepting.set(StructuralOption::None);
 
-                    this.currently_accepting = None;
                     match tls_stream {
-                        Ok(stream) => return Poll::Ready(Some(Ok(stream))),
-                        Err(err) => {
+                        Ok(Ok(stream)) => return Poll::Ready(Some(Ok(stream))),
+                        Ok(Err(err)) => {
                             log::error!("TLS handshake failed: {err:?}");
                         }
+                        Err(_elapsed) => log::error!("TLS handshake timeout"),
                     }
                 }
-                None => {
+                StructuralOptionProj::None => {
                     let (stream, peer) = ready!(this.listener.poll_accept(cx))?;
                     log::info!("Received connection from {peer}");
-                    this.currently_accepting = Some(this.tls_acceptor.accept(stream));
+                    this.currently_accepting
+                        .set(StructuralOption::Some(tokio::time::timeout(
+                            TLS_TIMEOUT,
+                            this.tls_acceptor.accept(stream),
+                        )));
                 }
             }
         }
