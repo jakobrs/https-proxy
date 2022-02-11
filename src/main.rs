@@ -6,6 +6,7 @@ use std::{
     str::FromStr,
     sync::Arc,
     task::{self, Poll},
+    time::Duration,
 };
 
 use clap::Parser;
@@ -18,7 +19,10 @@ use hyper::{
     Body, Client, Method, Request, Response, Server, StatusCode,
 };
 use rustls::{Certificate, PrivateKey, ServerConfig};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::{
+    net::{TcpListener, TcpStream},
+    time::Timeout,
+};
 use tokio_rustls::{server::TlsStream, TlsAcceptor};
 
 #[derive(Parser)]
@@ -98,10 +102,12 @@ async fn serve_plain(opts: &Opts) -> anyhow::Result<()> {
     Ok(server.await?)
 }
 
+const TLS_TIMEOUT: Duration = Duration::from_secs(5);
+
 struct Acceptor {
     listener: TcpListener,
     tls_acceptor: TlsAcceptor,
-    currently_accepting: FuturesUnordered<tokio_rustls::Accept<TcpStream>>,
+    currently_accepting: FuturesUnordered<Timeout<tokio_rustls::Accept<TcpStream>>>,
 }
 
 impl Acceptor {
@@ -143,16 +149,17 @@ impl Accept for Acceptor {
             let (stream, peer) = res?;
             log::info!("Received connection from {peer}");
 
-            this.currently_accepting
-                .push(this.tls_acceptor.accept(stream));
+            this.currently_accepting.push(tokio::time::timeout(
+                TLS_TIMEOUT,
+                this.tls_acceptor.accept(stream),
+            ));
         }
 
         while let Poll::Ready(Some(tls_stream)) = this.currently_accepting.poll_next_unpin(cx) {
             match tls_stream {
-                Ok(stream) => return Poll::Ready(Some(Ok(stream))),
-                Err(err) => {
-                    log::error!("TLS handshake failed: {err:?}");
-                }
+                Ok(Ok(stream)) => return Poll::Ready(Some(Ok(stream))),
+                Ok(Err(err)) => log::error!("TLS handshake failed: {err:?}"),
+                Err(_elapsed) => log::error!("TLS handshake timeout"),
             }
         }
 
