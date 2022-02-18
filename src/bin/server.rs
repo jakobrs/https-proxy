@@ -2,6 +2,7 @@ use std::{
     convert::Infallible,
     io::{Error as IoError, ErrorKind},
     net::SocketAddr,
+    path::{Path, PathBuf},
     pin::Pin,
     str::FromStr,
     sync::Arc,
@@ -36,12 +37,12 @@ struct Opts {
     /// Use TLS
     tls: bool,
 
-    #[clap(long)]
+    #[clap(long, parse(from_os_str))]
     /// Key file
-    key_file: Option<String>,
-    #[clap(long)]
+    key_file: Option<PathBuf>,
+    #[clap(long, parse(from_os_str))]
     /// Certificate file
-    cert_file: Option<String>,
+    cert_file: Option<PathBuf>,
 }
 
 #[tokio::main]
@@ -167,7 +168,7 @@ impl Accept for Acceptor {
     }
 }
 
-fn read_certs(file: &str) -> std::io::Result<Vec<Certificate>> {
+fn read_certs(file: &Path) -> std::io::Result<Vec<Certificate>> {
     let mut file_reader = std::io::BufReader::new(std::fs::File::open(file)?);
 
     let certs = rustls_pemfile::certs(&mut file_reader)?;
@@ -175,7 +176,7 @@ fn read_certs(file: &str) -> std::io::Result<Vec<Certificate>> {
     Ok(certs.into_iter().map(Certificate).collect())
 }
 
-fn read_key(file: &str) -> std::io::Result<PrivateKey> {
+fn read_key(file: &Path) -> std::io::Result<PrivateKey> {
     let mut file_reader = std::io::BufReader::new(std::fs::File::open(file)?);
 
     let keys = rustls_pemfile::pkcs8_private_keys(&mut file_reader)?;
