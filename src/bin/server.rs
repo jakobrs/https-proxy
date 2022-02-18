@@ -19,7 +19,9 @@ use hyper::{
     upgrade::Upgraded,
     Body, Client, Method, Request, Response, Server, StatusCode,
 };
-use rustls::{Certificate, PrivateKey, ServerConfig};
+use rustls::{
+    server::AllowAnyAuthenticatedClient, Certificate, PrivateKey, RootCertStore, ServerConfig,
+};
 use tokio::{
     net::{TcpListener, TcpStream},
     time::Timeout,
@@ -43,6 +45,14 @@ struct Opts {
     #[clap(long, parse(from_os_str))]
     /// Certificate file
     cert_file: Option<PathBuf>,
+
+    #[clap(long, requires = "client-cert-file", requires = "tls")]
+    /// Require clients to be authenticated
+    auth: bool,
+
+    #[clap(long, parse(from_os_str))]
+    /// Certificate used for client authentication
+    client_cert_file: Option<PathBuf>,
 }
 
 #[tokio::main]
@@ -119,10 +129,19 @@ impl Acceptor {
             let certs = read_certs(opts.cert_file.as_ref().unwrap())?;
             let key = read_key(opts.key_file.as_ref().unwrap())?;
 
-            let mut cfg = ServerConfig::builder()
-                .with_safe_defaults()
-                .with_no_client_auth()
-                .with_single_cert(certs, key)?;
+            let config_builder = ServerConfig::builder().with_safe_defaults();
+            let config_builder = if opts.auth {
+                let mut roots = RootCertStore::empty();
+
+                for cert in read_certs(opts.client_cert_file.as_deref().unwrap())? {
+                    roots.add(&cert)?;
+                }
+
+                config_builder.with_client_cert_verifier(AllowAnyAuthenticatedClient::new(roots))
+            } else {
+                config_builder.with_no_client_auth()
+            };
+            let mut cfg = config_builder.with_single_cert(certs, key)?;
             cfg.alpn_protocols = vec![b"http/1.1".to_vec()];
 
             Arc::new(cfg)
