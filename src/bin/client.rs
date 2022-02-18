@@ -1,8 +1,12 @@
-use std::sync::Arc;
+use std::{
+    io::{Error as IoError, ErrorKind},
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use anyhow::Result;
 use clap::{ArgEnum, Parser};
-use rustls::{ClientConfig, ServerName};
+use rustls::{Certificate, ClientConfig, PrivateKey, ServerName};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_rustls::TlsConnector;
 
@@ -19,6 +23,14 @@ struct Opts {
 
     #[clap(long, arg_enum, default_value_t = Runtime::CurrentThread)]
     runtime: Runtime,
+
+    #[clap(long, requires = "key-file", requires = "cert-file")]
+    auth: bool,
+
+    #[clap(long, parse(from_os_str))]
+    cert_file: Option<PathBuf>,
+    #[clap(long, parse(from_os_str))]
+    key_file: Option<PathBuf>,
 }
 
 #[derive(ArgEnum, Clone, Copy)]
@@ -45,7 +57,31 @@ async fn main_inner(opts: Opts) -> Result<()> {
 
     let opts = Arc::new(opts);
 
-    let tls_connector = get_tls_connector();
+    let tls_connector = {
+        let mut root_store = rustls::RootCertStore::empty();
+        root_store.add_server_trust_anchors(webpki_roots::TLS_SERVER_ROOTS.0.iter().map(|ta| {
+            rustls::OwnedTrustAnchor::from_subject_spki_name_constraints(
+                ta.subject,
+                ta.spki,
+                ta.name_constraints,
+            )
+        }));
+
+        let config_builder = ClientConfig::builder()
+            .with_safe_defaults()
+            .with_root_certificates(root_store);
+
+        let config = if opts.auth {
+            let certs = read_certs(opts.cert_file.as_ref().unwrap())?;
+            let key = read_key(opts.key_file.as_ref().unwrap())?;
+
+            config_builder.with_single_cert(certs, key)?
+        } else {
+            config_builder.with_no_client_auth()
+        };
+
+        TlsConnector::from(Arc::new(config))
+    };
     let tcp_listener = TcpListener::bind(&opts.listen).await?;
 
     loop {
@@ -61,26 +97,6 @@ async fn main_inner(opts: Opts) -> Result<()> {
     }
 }
 
-fn get_tls_connector() -> TlsConnector {
-    // this is basically stolen from the rustls docs
-
-    let mut root_store = rustls::RootCertStore::empty();
-    root_store.add_server_trust_anchors(webpki_roots::TLS_SERVER_ROOTS.0.iter().map(|ta| {
-        rustls::OwnedTrustAnchor::from_subject_spki_name_constraints(
-            ta.subject,
-            ta.spki,
-            ta.name_constraints,
-        )
-    }));
-
-    TlsConnector::from(Arc::new(
-        ClientConfig::builder()
-            .with_safe_defaults()
-            .with_root_certificates(root_store)
-            .with_no_client_auth(),
-    ))
-}
-
 async fn tunnel(mut stream: TcpStream, opts: &Opts, tls_connector: TlsConnector) -> Result<()> {
     let remote = TcpStream::connect(&opts.remote).await?;
     let mut remote_tls = tls_connector.connect(opts.domain.clone(), remote).await?;
@@ -90,4 +106,24 @@ async fn tunnel(mut stream: TcpStream, opts: &Opts, tls_connector: TlsConnector)
     log::info!("Stats: {stats:?}");
 
     Ok(())
+}
+
+fn read_certs(file: &Path) -> std::io::Result<Vec<Certificate>> {
+    let mut file_reader = std::io::BufReader::new(std::fs::File::open(file)?);
+
+    let certs = rustls_pemfile::certs(&mut file_reader)?;
+
+    Ok(certs.into_iter().map(Certificate).collect())
+}
+
+fn read_key(file: &Path) -> std::io::Result<PrivateKey> {
+    let mut file_reader = std::io::BufReader::new(std::fs::File::open(file)?);
+
+    let keys = rustls_pemfile::pkcs8_private_keys(&mut file_reader)?;
+
+    let key = keys
+        .into_iter()
+        .next()
+        .ok_or_else(|| IoError::new(ErrorKind::Other, "no keys"))?;
+    Ok(PrivateKey(key))
 }
