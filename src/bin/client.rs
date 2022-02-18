@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use anyhow::Result;
-use clap::Parser;
+use clap::{ArgEnum, Parser};
 use rustls::{ClientConfig, ServerName};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_rustls::TlsConnector;
@@ -16,13 +16,34 @@ struct Opts {
     remote: String,
     #[clap(short, long, parse(try_from_str = core::convert::TryFrom::try_from))]
     domain: ServerName,
+
+    #[clap(long, arg_enum, default_value = "current-thread")]
+    runtime: Runtime,
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+#[derive(ArgEnum, Clone, Copy)]
+enum Runtime {
+    CurrentThread,
+    MultiThreaded,
+}
+
+fn main() -> Result<()> {
+    let opts = Opts::parse();
+
+    let mut runtime_builder = match opts.runtime {
+        Runtime::CurrentThread => tokio::runtime::Builder::new_current_thread(),
+        Runtime::MultiThreaded => tokio::runtime::Builder::new_multi_thread(),
+    };
+
+    let runtime = runtime_builder.enable_all().build()?;
+
+    runtime.block_on(main_inner(opts))
+}
+
+async fn main_inner(opts: Opts) -> Result<()> {
     env_logger::init();
 
-    let opts = Arc::new(Opts::parse());
+    let opts = Arc::new(opts);
 
     let tls_connector = get_tls_connector();
     let tcp_listener = TcpListener::bind(&opts.listen).await?;
@@ -60,11 +81,7 @@ fn get_tls_connector() -> TlsConnector {
     ))
 }
 
-async fn tunnel(
-    mut stream: TcpStream,
-    opts: &Opts,
-    tls_connector: TlsConnector,
-) -> anyhow::Result<()> {
+async fn tunnel(mut stream: TcpStream, opts: &Opts, tls_connector: TlsConnector) -> Result<()> {
     let remote = TcpStream::connect(&opts.remote).await?;
     let mut remote_tls = tls_connector.connect(opts.domain.clone(), remote).await?;
 
