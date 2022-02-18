@@ -17,7 +17,7 @@ struct Opts {
     #[clap(short, long, parse(try_from_str = core::convert::TryFrom::try_from))]
     domain: ServerName,
 
-    #[clap(long, arg_enum, default_value = "current-thread")]
+    #[clap(long, arg_enum, default_value_t = Runtime::CurrentThread)]
     runtime: Runtime,
 }
 
