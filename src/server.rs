@@ -1,8 +1,8 @@
 use std::{
     convert::Infallible,
-    io::{Cursor, Error as IoError},
+    io::Error as IoError,
     net::SocketAddr,
-    path::{Path, PathBuf},
+    path::PathBuf,
     pin::Pin,
     str::FromStr,
     sync::Arc,
@@ -10,8 +10,10 @@ use std::{
     time::Duration,
 };
 
+use crate::utils;
+
 use anyhow::Context;
-use clap::Parser;
+use clap::Args;
 use futures_util::{stream::FuturesUnordered, StreamExt};
 use hyper::{
     client::HttpConnector,
@@ -20,18 +22,16 @@ use hyper::{
     upgrade::Upgraded,
     Body, Client, Method, Request, Response, Server, StatusCode,
 };
-use rustls::{
-    server::AllowAnyAuthenticatedClient, Certificate, PrivateKey, RootCertStore, ServerConfig,
-};
+use rustls::{server::AllowAnyAuthenticatedClient, RootCertStore, ServerConfig};
 use tokio::{
     net::{TcpListener, TcpStream},
     time::Timeout,
 };
 use tokio_rustls::{server::TlsStream, TlsAcceptor};
 
-#[derive(Parser)]
+#[derive(Args)]
 /// Runs an HTTP(S) proxy
-struct Opts {
+pub(crate) struct Opts {
     #[clap(short, long, default_value = "127.0.0.1:8100")]
     /// Listen address
     listen: String,
@@ -60,12 +60,7 @@ struct Opts {
     unrestricted: bool,
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    env_logger::init();
-
-    let opts = Opts::parse();
-
+pub(crate) async fn server_main(opts: Opts) -> anyhow::Result<()> {
     if opts.tls {
         serve_tls(&opts).await?;
     } else {
@@ -141,14 +136,14 @@ impl Acceptor {
         let addr = SocketAddr::from_str(&opts.listen)?;
 
         let server_config = {
-            let certs = read_certs(opts.cert_file.as_ref().unwrap())?;
-            let key = read_key(opts.key_file.as_ref().unwrap())?.context("no key")?;
+            let certs = utils::read_certs(opts.cert_file.as_ref().unwrap())?;
+            let key = utils::read_key(opts.key_file.as_ref().unwrap())?.context("no key")?;
 
             let config_builder = ServerConfig::builder().with_safe_defaults();
             let config_builder = if opts.auth {
                 let mut roots = RootCertStore::empty();
 
-                for cert in read_certs(opts.client_cert_file.as_deref().unwrap())? {
+                for cert in utils::read_certs(opts.client_cert_file.as_deref().unwrap())? {
                     roots.add(&cert)?;
                 }
 
@@ -200,30 +195,6 @@ impl Accept for Acceptor {
 
         Poll::Pending
     }
-}
-
-fn read_certs(file: &Path) -> std::io::Result<Vec<Certificate>> {
-    let mut file_reader = std::io::BufReader::new(std::fs::File::open(file)?);
-
-    let certs = rustls_pemfile::certs(&mut file_reader)?;
-
-    Ok(certs.into_iter().map(Certificate).collect())
-}
-
-fn read_key(file: &Path) -> std::io::Result<Option<PrivateKey>> {
-    let file_contents = std::fs::read(file)?;
-
-    let keys = rustls_pemfile::pkcs8_private_keys(&mut Cursor::new(&file_contents))?;
-    if let Some(key) = keys.into_iter().next() {
-        return Ok(Some(PrivateKey(key)));
-    }
-
-    let keys = rustls_pemfile::rsa_private_keys(&mut Cursor::new(&file_contents))?;
-    if let Some(key) = keys.into_iter().next() {
-        return Ok(Some(PrivateKey(key)));
-    }
-
-    Ok(None)
 }
 
 async fn tunnel(

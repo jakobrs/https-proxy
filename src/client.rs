@@ -1,18 +1,16 @@
-use std::{
-    io::Cursor,
-    path::{Path, PathBuf},
-    sync::Arc,
-};
+use std::{path::PathBuf, sync::Arc};
+
+use crate::utils;
 
 use anyhow::{Context, Result};
-use clap::{ArgEnum, Parser};
-use rustls::{Certificate, ClientConfig, PrivateKey, ServerName};
+use clap::Args;
+use rustls::{ClientConfig, ServerName};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_rustls::TlsConnector;
 
-#[derive(Parser)]
-/// https-proxy client
-struct Opts {
+#[derive(Args)]
+/// Connects to an HTTP(S) proxy
+pub(crate) struct Opts {
     #[clap(short, long, default_value = "127.0.0.1:8080")]
     /// Listen address
     listen: String,
@@ -23,10 +21,6 @@ struct Opts {
     #[clap(short, long, parse(try_from_str = core::convert::TryFrom::try_from))]
     /// Remote server name (for SNI and verification)
     domain: ServerName,
-
-    #[clap(long, arg_enum, default_value_t = Runtime::CurrentThread)]
-    /// Tokio runtime
-    runtime: Runtime,
 
     #[clap(long, requires = "key-file", requires = "cert-file")]
     /// Enable client authentication
@@ -40,28 +34,7 @@ struct Opts {
     key_file: Option<PathBuf>,
 }
 
-#[derive(ArgEnum, Clone, Copy)]
-enum Runtime {
-    CurrentThread,
-    MultiThreaded,
-}
-
-fn main() -> Result<()> {
-    let opts = Opts::parse();
-
-    let mut runtime_builder = match opts.runtime {
-        Runtime::CurrentThread => tokio::runtime::Builder::new_current_thread(),
-        Runtime::MultiThreaded => tokio::runtime::Builder::new_multi_thread(),
-    };
-
-    let runtime = runtime_builder.enable_all().build()?;
-
-    runtime.block_on(main_inner(opts))
-}
-
-async fn main_inner(opts: Opts) -> Result<()> {
-    env_logger::init();
-
+pub(crate) async fn client_main(opts: Opts) -> Result<()> {
     let opts = Arc::new(opts);
 
     let tls_connector = {
@@ -79,8 +52,8 @@ async fn main_inner(opts: Opts) -> Result<()> {
             .with_root_certificates(root_store);
 
         let config = if opts.auth {
-            let certs = read_certs(opts.cert_file.as_ref().unwrap())?;
-            let key = read_key(opts.key_file.as_ref().unwrap())?.context("no key")?;
+            let certs = utils::read_certs(opts.cert_file.as_ref().unwrap())?;
+            let key = utils::read_key(opts.key_file.as_ref().unwrap())?.context("no key")?;
 
             config_builder.with_single_cert(certs, key)?
         } else {
@@ -113,28 +86,4 @@ async fn tunnel(mut stream: TcpStream, opts: &Opts, tls_connector: TlsConnector)
     log::info!("Stats: {stats:?}");
 
     Ok(())
-}
-
-fn read_certs(file: &Path) -> std::io::Result<Vec<Certificate>> {
-    let mut file_reader = std::io::BufReader::new(std::fs::File::open(file)?);
-
-    let certs = rustls_pemfile::certs(&mut file_reader)?;
-
-    Ok(certs.into_iter().map(Certificate).collect())
-}
-
-fn read_key(file: &Path) -> std::io::Result<Option<PrivateKey>> {
-    let file_contents = std::fs::read(file)?;
-
-    let keys = rustls_pemfile::pkcs8_private_keys(&mut Cursor::new(&file_contents))?;
-    if let Some(key) = keys.into_iter().next() {
-        return Ok(Some(PrivateKey(key)));
-    }
-
-    let keys = rustls_pemfile::rsa_private_keys(&mut Cursor::new(&file_contents))?;
-    if let Some(key) = keys.into_iter().next() {
-        return Ok(Some(PrivateKey(key)));
-    }
-
-    Ok(None)
 }
