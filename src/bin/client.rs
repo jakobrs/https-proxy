@@ -14,22 +14,29 @@ use tokio_rustls::TlsConnector;
 /// https-proxy client
 struct Opts {
     #[clap(short, long, default_value = "127.0.0.1:8080")]
+    /// Listen address
     listen: String,
 
     #[clap(short, long)]
+    /// Remote address
     remote: String,
     #[clap(short, long, parse(try_from_str = core::convert::TryFrom::try_from))]
+    /// Remote server name (for SNI and verification)
     domain: ServerName,
 
     #[clap(long, arg_enum, default_value_t = Runtime::CurrentThread)]
+    /// Tokio runtime
     runtime: Runtime,
 
     #[clap(long, requires = "key-file", requires = "cert-file")]
+    /// Enable client authentication
     auth: bool,
 
     #[clap(long, parse(from_os_str))]
+    /// Certificate used for client authentication
     cert_file: Option<PathBuf>,
     #[clap(long, parse(from_os_str))]
+    /// Key used for client authentication
     key_file: Option<PathBuf>,
 }
 
