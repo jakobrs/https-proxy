@@ -55,7 +55,7 @@ pub(crate) struct Opts {
     /// Certificate used for client authentication
     client_cert_file: Option<PathBuf>,
 
-    #[clap(long, requires = "auth")]
+    #[clap(long)]
     /// Allow connecting to any domain
     unrestricted: bool,
 }
