@@ -1,10 +1,10 @@
 use std::{
-    io::{Error as IoError, ErrorKind},
+    io::Cursor,
     path::{Path, PathBuf},
     sync::Arc,
 };
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{ArgEnum, Parser};
 use rustls::{Certificate, ClientConfig, PrivateKey, ServerName};
 use tokio::net::{TcpListener, TcpStream};
@@ -73,7 +73,7 @@ async fn main_inner(opts: Opts) -> Result<()> {
 
         let config = if opts.auth {
             let certs = read_certs(opts.cert_file.as_ref().unwrap())?;
-            let key = read_key(opts.key_file.as_ref().unwrap())?;
+            let key = read_key(opts.key_file.as_ref().unwrap())?.context("no key")?;
 
             config_builder.with_single_cert(certs, key)?
         } else {
@@ -116,14 +116,18 @@ fn read_certs(file: &Path) -> std::io::Result<Vec<Certificate>> {
     Ok(certs.into_iter().map(Certificate).collect())
 }
 
-fn read_key(file: &Path) -> std::io::Result<PrivateKey> {
-    let mut file_reader = std::io::BufReader::new(std::fs::File::open(file)?);
+fn read_key(file: &Path) -> std::io::Result<Option<PrivateKey>> {
+    let file_contents = std::fs::read(file)?;
 
-    let keys = rustls_pemfile::pkcs8_private_keys(&mut file_reader)?;
+    let keys = rustls_pemfile::pkcs8_private_keys(&mut Cursor::new(&file_contents))?;
+    if let Some(key) = keys.into_iter().next() {
+        return Ok(Some(PrivateKey(key)));
+    }
 
-    let key = keys
-        .into_iter()
-        .next()
-        .ok_or_else(|| IoError::new(ErrorKind::Other, "no keys"))?;
-    Ok(PrivateKey(key))
+    let keys = rustls_pemfile::rsa_private_keys(&mut Cursor::new(&file_contents))?;
+    if let Some(key) = keys.into_iter().next() {
+        return Ok(Some(PrivateKey(key)));
+    }
+
+    Ok(None)
 }

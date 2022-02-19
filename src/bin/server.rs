@@ -1,6 +1,6 @@
 use std::{
     convert::Infallible,
-    io::{Error as IoError, ErrorKind},
+    io::{Cursor, Error as IoError},
     net::SocketAddr,
     path::{Path, PathBuf},
     pin::Pin,
@@ -10,6 +10,7 @@ use std::{
     time::Duration,
 };
 
+use anyhow::Context;
 use clap::Parser;
 use futures_util::{stream::FuturesUnordered, StreamExt};
 use hyper::{
@@ -127,7 +128,7 @@ impl Acceptor {
 
         let server_config = {
             let certs = read_certs(opts.cert_file.as_ref().unwrap())?;
-            let key = read_key(opts.key_file.as_ref().unwrap())?;
+            let key = read_key(opts.key_file.as_ref().unwrap())?.context("no key")?;
 
             let config_builder = ServerConfig::builder().with_safe_defaults();
             let config_builder = if opts.auth {
@@ -195,16 +196,20 @@ fn read_certs(file: &Path) -> std::io::Result<Vec<Certificate>> {
     Ok(certs.into_iter().map(Certificate).collect())
 }
 
-fn read_key(file: &Path) -> std::io::Result<PrivateKey> {
-    let mut file_reader = std::io::BufReader::new(std::fs::File::open(file)?);
+fn read_key(file: &Path) -> std::io::Result<Option<PrivateKey>> {
+    let file_contents = std::fs::read(file)?;
 
-    let keys = rustls_pemfile::pkcs8_private_keys(&mut file_reader)?;
+    let keys = rustls_pemfile::pkcs8_private_keys(&mut Cursor::new(&file_contents))?;
+    if let Some(key) = keys.into_iter().next() {
+        return Ok(Some(PrivateKey(key)));
+    }
 
-    let key = keys
-        .into_iter()
-        .next()
-        .ok_or_else(|| IoError::new(ErrorKind::Other, "no keys"))?;
-    Ok(PrivateKey(key))
+    let keys = rustls_pemfile::rsa_private_keys(&mut Cursor::new(&file_contents))?;
+    if let Some(key) = keys.into_iter().next() {
+        return Ok(Some(PrivateKey(key)));
+    }
+
+    Ok(None)
 }
 
 async fn tunnel(
