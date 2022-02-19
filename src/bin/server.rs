@@ -54,6 +54,10 @@ struct Opts {
     #[clap(long, parse(from_os_str))]
     /// Certificate used for client authentication
     client_cert_file: Option<PathBuf>,
+
+    #[clap(long, requires = "auth")]
+    /// Allow connecting to any domain
+    unrestricted: bool,
 }
 
 #[tokio::main]
@@ -79,9 +83,14 @@ async fn serve_tls(opts: &Opts) -> anyhow::Result<()> {
         .http1_title_case_headers(true)
         .build_http();
 
+    let unrestricted = opts.unrestricted;
     let make_service = make_service_fn(|_| {
         let client = client.clone();
-        async move { Ok::<_, Infallible>(service_fn(move |req| tunnel(req, client.clone()))) }
+        async move {
+            Ok::<_, Infallible>(service_fn(move |req| {
+                tunnel(req, client.clone(), unrestricted)
+            }))
+        }
     });
 
     let server = Server::builder(incoming)
@@ -100,10 +109,15 @@ async fn serve_plain(opts: &Opts) -> anyhow::Result<()> {
         .http1_title_case_headers(true)
         .build_http();
 
+    let unrestricted = opts.unrestricted;
     let make_service = make_service_fn(|socket: &AddrStream| {
         log::info!("Received connection from {}", socket.remote_addr());
         let client = client.clone();
-        async move { Ok::<_, Infallible>(service_fn(move |req| tunnel(req, client.clone()))) }
+        async move {
+            Ok::<_, Infallible>(service_fn(move |req| {
+                tunnel(req, client.clone(), unrestricted)
+            }))
+        }
     });
 
     let server = Server::bind(&addr)
@@ -215,9 +229,10 @@ fn read_key(file: &Path) -> std::io::Result<Option<PrivateKey>> {
 async fn tunnel(
     req: Request<Body>,
     client: Client<HttpConnector>,
+    unrestricted: bool,
 ) -> Result<Response<Body>, hyper::Error> {
     if let Some(authority) = req.uri().authority() {
-        if authority.host() != "domain-name.xyz" {
+        if authority.host() != "domain-name.xyz" && !unrestricted {
             return Ok(Response::builder()
                 .status(StatusCode::FORBIDDEN)
                 .body("Only connections to domain-name.xyz are allowed".into())
