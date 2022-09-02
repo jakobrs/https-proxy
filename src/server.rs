@@ -16,10 +16,6 @@ pub(crate) struct Opts {
     #[clap(short, long, default_value = "127.0.0.1:8100")]
     /// Listen address
     listen: String,
-
-    #[clap(long)]
-    /// Allow connecting to any domain
-    unrestricted: bool,
 }
 
 pub(crate) async fn server_main(opts: Opts) -> anyhow::Result<()> {
@@ -30,15 +26,10 @@ pub(crate) async fn server_main(opts: Opts) -> anyhow::Result<()> {
         .http1_title_case_headers(true)
         .build_http();
 
-    let unrestricted = opts.unrestricted;
     let make_service = make_service_fn(|socket: &AddrStream| {
         log::info!("Received connection from {}", socket.remote_addr());
         let client = client.clone();
-        async move {
-            Ok::<_, Infallible>(service_fn(move |req| {
-                tunnel(req, client.clone(), unrestricted)
-            }))
-        }
+        async move { Ok::<_, Infallible>(service_fn(move |req| tunnel(req, client.clone()))) }
     });
 
     let server = Server::bind(&addr)
@@ -52,15 +43,8 @@ pub(crate) async fn server_main(opts: Opts) -> anyhow::Result<()> {
 async fn tunnel(
     req: Request<Body>,
     client: Client<HttpConnector>,
-    unrestricted: bool,
 ) -> Result<Response<Body>, hyper::Error> {
     if let Some(authority) = req.uri().authority() {
-        if authority.host() != "domain-name.xyz" && !unrestricted {
-            return Ok(Response::builder()
-                .status(StatusCode::FORBIDDEN)
-                .body("Only connections to domain-name.xyz are allowed".into())
-                .unwrap());
-        }
         let authority = authority.to_string();
 
         if req.method() == Method::CONNECT {
